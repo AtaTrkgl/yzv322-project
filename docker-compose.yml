@@ -5,12 +5,12 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
-      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-finance}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 5s
@@ -51,8 +51,8 @@ services:
 
   airflow:
     build:
-      context: .
-      dockerfile: Dockerfile.airflow
+      context: ./src/airflow
+      dockerfile: Dockerfile
     container_name: airflow
     command: standalone
     user: root
@@ -69,6 +69,7 @@ services:
     volumes:
       - ./src:/opt/airflow/dags
       - /var/run/docker.sock:/var/run/docker.sock
+      - ingestion_data:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,3 +84,4 @@ services:
 volumes:
   postgres_data:
   es_data:
+  ingestion_data:

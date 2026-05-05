@@ -1,12 +1,12 @@
 from airflow import DAG
 from airflow.providers.docker.operators.docker import DockerOperator
 from datetime import datetime, timedelta
-from docker.types import Mount
 import os
+from docker.types import Mount
 
 default_args = {
     'owner': 'data_eng',
-    'depends_on_past': False,
+    'depends_on_past': True,
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 3,
@@ -20,6 +20,7 @@ with DAG(
     schedule_interval='@daily',
     start_date=datetime(2026, 1, 1),
     catchup=True,
+    max_active_runs=1,
     tags=['ingestion', 'yfinance', 'docker'],
 ) as dag:
     
@@ -31,9 +32,24 @@ with DAG(
         # No --tickers argument supplied, meaning it will fallback to the ticks list in python
         command="python yfinance_fetcher.py --start {{ ds }} --end {{ data_interval_end | ds }} --output /data",
         docker_url='unix://var/run/docker.sock',
-        network_mode='bridge',
+        network_mode='yzv322-project_default',
+        mount_tmp_dir=False,
         mounts=[
-            Mount(source='C:/Dev/Python/yzv322-project/data', target='/data', type='bind')
+            Mount(source='ingestion_data', target='/data', type='volume')
+        ]
+    )
+
+    transform_data = DockerOperator(
+        task_id='transform_yfinance_data',
+        image='ingestion-service:latest',
+        api_version='auto',
+        auto_remove=True,
+        command="python transformer.py --data-dir /data --date {{ ds }}",
+        docker_url='unix://var/run/docker.sock',
+        network_mode='yzv322-project_default',
+        mount_tmp_dir=False,
+        mounts=[
+            Mount(source='ingestion_data', target='/data', type='volume')
         ]
     )
 
@@ -42,9 +58,10 @@ with DAG(
         image='ingestion-service:latest',
         api_version='auto',
         auto_remove=True,
-        command="python postgres_loader.py --data-dir /data",
+        command="python postgres_loader.py --data-dir /data --date {{ ds }}",
         docker_url='unix://var/run/docker.sock',
         network_mode='yzv322-project_default',
+        mount_tmp_dir=False,
         environment={
             'POSTGRES_HOST': 'postgres',
             'POSTGRES_PORT': '5432',
@@ -53,9 +70,8 @@ with DAG(
             'POSTGRES_DB': 'finance'
         },
         mounts=[
-            Mount(source='C:/Dev/Python/yzv322-project/data', target='/data', type='bind')
+            Mount(source='ingestion_data', target='/data', type='volume')
         ]
     )
     
-    run_ingestion >> load_to_postgres
-
+    run_ingestion >> transform_data >> load_to_postgres
