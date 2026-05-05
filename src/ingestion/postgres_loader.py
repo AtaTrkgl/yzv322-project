@@ -1,0 +1,64 @@
+import os
+import json
+import psycopg2
+import logging
+import argparse
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def load_data(data_dir, db_host, db_port, db_user, db_password, db_name):
+    conn = psycopg2.connect(
+        host=db_host,
+        port=db_port,
+        user=db_user,
+        password=db_password,
+        dbname=db_name
+    )
+    cur = conn.cursor()
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stock_data (
+            id SERIAL PRIMARY KEY,
+            ticker VARCHAR(10),
+            timestamp TIMESTAMP,
+            open FLOAT,
+            high FLOAT,
+            low FLOAT,
+            close FLOAT,
+            volume BIGINT,
+            UNIQUE(ticker, timestamp)
+        );
+    """)
+    conn.commit()
+
+    for filename in os.listdir(data_dir):
+        if filename.endswith(".json"):
+            filepath = os.path.join(data_dir, filename)
+            logging.info(f"Loading {filepath} into database")
+            with open(filepath, 'r') as f:
+                records = json.load(f)
+                for r in records:
+                    cur.execute("""
+                        INSERT INTO stock_data (ticker, timestamp, open, high, low, close, volume)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (ticker, timestamp) DO NOTHING;
+                    """, (
+                        r['ticker'], r.get('timestamp'), r.get('open'), r.get('high'), r.get('low'), r.get('close'), r.get('volume', 0)
+                    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+    logging.info("Successfully loaded data into PostgreSQL")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", required=True)
+    args = parser.parse_args()
+    
+    host = os.environ.get("POSTGRES_HOST", "postgres")
+    port = os.environ.get("POSTGRES_PORT", "5432")
+    user = os.environ.get("POSTGRES_USER", "airflow")
+    password = os.environ.get("POSTGRES_PASSWORD", "airflow")
+    db = os.environ.get("POSTGRES_DB", "finance")
+    
+    load_data(args.data_dir, host, port, user, password, db)
