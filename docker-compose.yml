@@ -1,32 +1,40 @@
 services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16
     container_name: postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_USER:     ${POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
-      POSTGRES_DB: ${POSTGRES_DB:-finance}
+      POSTGRES_DB:       ${POSTGRES_DB:-finance}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-airflow}"]
       interval: 5s
-      retries: 5
+      retries: 10
+    networks:
+      - pipeline-net
 
+  # ── pgAdmin ─────────────────────────────────────────────────────────────────
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_EMAIL:    ${PGADMIN_EMAIL:-admin@admin.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
     ports:
       - "5050:80"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeline-net
 
+  # ── Elasticsearch ────────────────────────────────────────────────────────────
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: elasticsearch
@@ -38,7 +46,14 @@ services:
       - "9200:9200"
     volumes:
       - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      retries: 15
+    networks:
+      - pipeline-net
 
+  # ── Kibana ───────────────────────────────────────────────────────────────────
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: kibana
@@ -47,8 +62,16 @@ services:
     ports:
       - "5601:5601"
     depends_on:
-      - elasticsearch
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status | grep -q '\"overall\":{\"level\":\"available\"' || exit 1"]
+      interval: 15s
+      retries: 20
+    networks:
+      - pipeline-net
 
+  # ── Airflow ──────────────────────────────────────────────────────────────────
   airflow:
     build:
       context: ./src/airflow
@@ -60,7 +83,7 @@ services:
       - "8080:8080"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-airflow}
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-finance}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - _AIRFLOW_DB_MIGRATE=True
       - _AIRFLOW_WWW_USER_CREATE=True
@@ -73,13 +96,62 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - pipeline-net
 
+  # ── Ingestion service (built image used by Airflow DockerOperator) ───────────
   ingestion-service:
     build:
       context: ./src/ingestion
     image: ingestion-service:latest
     container_name: ingestion-service
-    command: ["python", "-c", "print('Ingestion service ready')"]
+    command: ["python", "-c", "print('Ingestion service image ready')"]
+    networks:
+      - pipeline-net
+
+  # ── Elasticsearch Indexer ────────────────────────────────────────────────────
+  elasticsearch-indexer:
+    build:
+      context: ./src/elasticsearch
+      dockerfile: Dockerfile
+    container_name: elasticsearch-indexer
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-airflow}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-airflow}
+      - POSTGRES_DB=${POSTGRES_DB:-finance}
+      - ELASTICSEARCH_HOST=http://elasticsearch:9200
+      - ES_INDEX=stock_market
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - pipeline-net
+
+  # ── Kibana Dashboard Setup (runs once, then exits) ───────────────────────────
+  kibana-setup:
+    build:
+      context: ./src/elasticsearch
+      dockerfile: Dockerfile
+    container_name: kibana-setup
+    command: ["python", "kibana_setup.py"]
+    environment:
+      - KIBANA_HOST=http://kibana:5601
+      - ES_INDEX=stock_market
+    depends_on:
+      kibana:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - pipeline-net
+
+networks:
+  pipeline-net:
+    driver: bridge
 
 volumes:
   postgres_data:
