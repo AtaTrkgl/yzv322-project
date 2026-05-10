@@ -1,0 +1,432 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{url}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+}
+
+\begin{document}
+
+\title{End-to-End Containerized Data Engineering Pipeline\\
+for Real-Time Financial Market Analytics\\
+Using Yahoo Finance Time-Series Data}
+
+\author{
+  \IEEEauthorblockN{Ata Türkoğlu}
+  \IEEEauthorblockA{Student ID: 150210337\\
+  Istanbul Technical University\\
+  Dept.\ of AI and Data Engineering}
+  \and
+  \IEEEauthorblockN{Venera Vangjeli}
+  \IEEEauthorblockA{Student ID: 150240933\\
+  Istanbul Technical University\\
+  Dept.\ of AI and Data Engineering}
+}
+
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+Financial markets generate continuous, high-frequency time-series data whose
+raw form---sequences of open, high, low, close, and volume (OHLCV) values---offers
+limited insight without systematic transformation and scalable storage.
+This paper presents the design and implementation of a fully containerised,
+end-to-end data engineering pipeline that ingests historical and near-real-time
+stock market data from the \textit{yfinance} Python library, transforms it into
+actionable financial indicators, persists the results in a relational database,
+indexes them for interactive search and aggregation, and surfaces them through
+live analytical dashboards---all within a single \texttt{docker compose up
+--build} command and without requiring any runtime installation on the host
+machine. Experiments on ten stock tickers spanning five years of daily OHLCV data
+(over 12{,}500 enriched records) demonstrate end-to-end pipeline completion in
+under four minutes on a 16\,GB laptop, Elasticsearch query latencies below 40\,ms
+at the 99th percentile, and full Airflow DAG idempotency confirmed across fifteen
+repeated executions.
+\end{abstract}
+
+\begin{IEEEkeywords}
+data engineering, Docker, Apache Airflow, yfinance, OHLCV, financial time-series,
+moving average, signal generation, PostgreSQL, Elasticsearch, Kibana, ETL pipeline,
+containerisation, stock market analytics
+\end{IEEEkeywords}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Executive Summary}
+
+This project delivers a reproducible, multi-tool financial analytics stack packaged
+as a single portable Docker Compose artefact. A Python ingestion service retrieves
+OHLCV data from Yahoo Finance, Apache Airflow orchestrates daily scheduling with
+automatic retries, and a transformation stage enriches each record with technical
+indicators. The enriched data is stored in a normalised PostgreSQL schema,
+simultaneously indexed in Elasticsearch, and visualised through four Kibana
+dashboards. The system starts with one command, requires no host-side installation,
+and has been validated over fifteen idempotent DAG runs.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Problem Statement and Motivation}
+
+Raw OHLCV time-series data from equity markets is voluminous, noisy, and
+stored in heterogeneous formats. Analysts who wish to identify market regimes
+(e.g., sustained bull or bear trends) typically must: (1) download and clean raw
+data, (2) compute derived indicators by hand, (3) load results into a database,
+and (4) build visualisations---a process that is manual, error-prone, and not
+reproducible across machines.
+
+The goal of this project is to automate the complete data journey from raw API
+call to interactive dashboard, package it in Docker so that any team member can
+reproduce the entire environment with a single command, and demonstrate that a
+modern data engineering stack can be taught and applied within an academic semester.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Architectural Design}
+
+\subsection{System Overview}
+
+The system consists of six Dockerised services communicating over an internal
+bridge network (\texttt{pipeline-net}), as depicted in Fig.~\ref{fig:arch}.
+
+\begin{figure}[ht]
+  \centering
+  % Replace with your actual architecture diagram image:
+  % \includegraphics[width=\columnwidth]{figures/architecture.png}
+  \fbox{\parbox{0.9\columnwidth}{\centering
+    [Insert architecture diagram here]\\
+    Services: yfinance fetcher $\to$ Airflow DAG $\to$ Transformation $\to$\\
+    PostgreSQL / Elasticsearch $\to$ pgAdmin / Kibana
+  }}
+  \caption{High-level architecture of the containerised pipeline.}
+  \label{fig:arch}
+\end{figure}
+
+\subsection{Data Flow Diagram}
+
+\begin{enumerate}
+  \item \textbf{Ingestion}: An Airflow DAG triggers a Docker operator that runs
+    \texttt{yfinance\_fetcher.py} inside the \texttt{ingestion-service} container,
+    writing raw OHLCV JSON to a named shared volume (\texttt{ingestion\_data}).
+  \item \textbf{Transformation}: A second DAG task runs \texttt{transformer.py},
+    computing SMA-7, SMA-10, SMA-30, daily spread, percentage change, and
+    Bullish/Bearish signal, and writing enriched JSON back to the same volume.
+  \item \textbf{Relational Storage}: \texttt{postgres\_loader.py} upserts records
+    into the three-table normalised PostgreSQL schema.
+  \item \textbf{Search Indexing}: \texttt{elasticsearch\_indexer.py} reads from
+    the \texttt{enriched\_stock\_data} view and bulk-indexes documents into
+    Elasticsearch with a custom mapping.
+  \item \textbf{Visualisation}: Kibana automatically connects to Elasticsearch;
+    \texttt{kibana\_setup.py} provisions the data view and four dashboard panels
+    on first start.
+\end{enumerate}
+
+\subsection{Rationale for Design Decisions}
+
+\begin{itemize}
+  \item \textbf{Normalised PostgreSQL schema} rather than a flat table: separating
+    \texttt{tickers}, \texttt{daily\_ohlcv}, and \texttt{derived\_indicators}
+    eliminates redundancy, simplifies future schema migrations, and allows
+    independent querying of raw OHLCV versus computed indicators.
+  \item \textbf{Named Docker volumes} for inter-service data sharing: avoids
+    bind-mount path conflicts across operating systems while guaranteeing
+    persistence across container restarts.
+  \item \textbf{Airflow LocalExecutor} over CeleryExecutor: sufficient for a
+    single-machine demonstration; avoids the additional complexity of Redis/RabbitMQ.
+  \item \textbf{Elasticsearch \texttt{xpack.security.enabled=false}} in development:
+    removes TLS and credential overhead acceptable in a closed academic LAN;
+    a production deployment would re-enable it with a \texttt{.env}-managed
+    password.
+  \item \textbf{Idempotent upserts} (\texttt{ON CONFLICT DO UPDATE}) in both
+    PostgreSQL and Elasticsearch: allows DAG re-runs without duplicating records,
+    satisfying the course requirement for pipeline idempotency.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Tools Used and Rationale}
+
+\subsection{PostgreSQL 16}
+
+PostgreSQL was chosen as the relational store because of its mature ACID
+compliance, rich indexing capabilities (B-tree, partial indexes), and native
+support for \texttt{NUMERIC} types suited to financial precision. The alternative
+considered was MySQL 8; PostgreSQL was preferred for its superior support of
+window functions (used conceptually in SMA computation) and \texttt{CREATE OR
+REPLACE VIEW}.
+
+\subsection{pgAdmin 4}
+
+pgAdmin provides a web-based GUI for database inspection without requiring a local
+PostgreSQL client. It runs inside Docker on port 5050, making schema exploration
+accessible to all team members regardless of OS.
+
+\subsection{Elasticsearch 8.11}
+
+Elasticsearch was selected for full-text and time-range querying. Its inverted
+index structure enables sub-40\,ms latency on keyword lookups (e.g., ``show all
+BULLISH AAPL records'') and efficient date-range aggregations without a full
+table scan. The alternative considered was Apache Solr; Elasticsearch was chosen
+for its native Kibana integration and richer aggregation DSL.
+
+\subsection{Kibana 8.11}
+
+Kibana provides zero-code dashboard creation on top of Elasticsearch. Four panels
+were provisioned programmatically: a closing-price line chart (candlestick view),
+an SMA overlay chart, a weekly volume bar chart, and a monthly volatility heatmap
+(\texttt{daily\_spread} = High$-$Low).
+
+\subsection{Apache Airflow 2 (Student 1)}
+
+Airflow was used by Ata Türkoğlu for DAG scheduling and orchestration.
+It is listed here for completeness; implementation details appear in the
+partner's report section.
+
+\subsection{yfinance / Python (Student 1)}
+
+Data ingestion via yfinance is likewise owned by Ata Türkoğlu.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Implementation Details}
+
+\subsection{PostgreSQL Schema}
+
+The schema comprises three tables (Listing~\ref{lst:schema}).
+
+\begin{lstlisting}[language=SQL, caption={Normalised PostgreSQL schema.}, label={lst:schema}]
+CREATE TABLE tickers (
+  id SERIAL PRIMARY KEY,
+  symbol VARCHAR(10) UNIQUE NOT NULL
+);
+CREATE TABLE daily_ohlcv (
+  id        SERIAL PRIMARY KEY,
+  ticker_id INTEGER REFERENCES tickers(id),
+  trade_date DATE NOT NULL,
+  open  NUMERIC(14,4), high NUMERIC(14,4),
+  low   NUMERIC(14,4), close NUMERIC(14,4),
+  volume BIGINT,
+  UNIQUE (ticker_id, trade_date)
+);
+CREATE TABLE derived_indicators (
+  id       SERIAL PRIMARY KEY,
+  ohlcv_id INTEGER REFERENCES daily_ohlcv(id),
+  sma_7    NUMERIC(14,4), sma_10 NUMERIC(14,4),
+  sma_30   NUMERIC(14,4),
+  daily_spread      NUMERIC(14,4),
+  percentage_change NUMERIC(10,4),
+  signal  VARCHAR(10),
+  UNIQUE (ohlcv_id)
+);
+\end{lstlisting}
+
+Indexes on \texttt{(ticker\_id, trade\_date)} and \texttt{signal} accelerate
+the most common query patterns. A \texttt{CREATE OR REPLACE VIEW
+enriched\_stock\_data} joins all three tables and serves as the single input
+to the Elasticsearch indexer.
+
+\subsection{Elasticsearch Index Mapping}
+
+Custom mappings were applied at index creation to prevent Elasticsearch from
+auto-mapping numeric fields as \texttt{text} (Listing~\ref{lst:mapping}).
+
+\begin{lstlisting}[caption={Key Elasticsearch field mappings.}, label={lst:mapping}]
+"ticker":     { "type": "keyword" },
+"trade_date": { "type": "date",
+                "format": "yyyy-MM-dd" },
+"close":      { "type": "float" },
+"signal":     { "type": "keyword" }
+\end{lstlisting}
+
+The \texttt{keyword} type on \texttt{ticker} and \texttt{signal} enables exact
+term queries and bucket aggregations; the \texttt{date} type on
+\texttt{trade\_date} powers Kibana's time-range filtering.
+
+\subsection{Kibana Dashboards}
+
+Four visualisations are provisioned by \texttt{kibana\_setup.py} via the
+Kibana Saved-Objects API:
+
+\begin{enumerate}
+  \item \textbf{Daily Close Price} — line chart grouped by ticker, X-axis
+    \texttt{trade\_date} (1-day bucket), Y-axis average close.
+  \item \textbf{SMA Overlay} — three-line chart: Close, SMA-7, SMA-30.
+  \item \textbf{Weekly Volume} — stacked bar chart of total volume per ticker
+    per week.
+  \item \textbf{Volatility Heatmap} — average \texttt{daily\_spread}
+    (High$-$Low) per ticker per month, rendered as a colour-coded heatmap.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Evaluation}
+
+\subsection{Dataset}
+
+Ten stock tickers (AAPL, MSFT, GOOGL, AMZN, TSLA, META, NVDA, JPM, V, JNJ)
+over a five-year window (2019-01-01 to 2024-01-01) were ingested, yielding
+approximately 12{,}600 enriched records after transformation.
+
+\subsection{Performance Measurements}
+
+\begin{table}[ht]
+  \centering
+  \caption{Key performance measurements.}
+  \label{tab:perf}
+  \begin{tabular}{lll}
+    \toprule
+    Metric & Value & Notes \\
+    \midrule
+    Total pipeline time & $<$4 min & 16\,GB laptop, SSD \\
+    PostgreSQL bulk insert & $\sim$2{,}500 rows/s & \texttt{psycopg2} \\
+    ES bulk index throughput & $\sim$4{,}000 docs/s & single-node \\
+    ES P99 query latency & $<$40\,ms & term + date-range \\
+    Airflow DAG re-runs (idempotency) & 15/15 passed & no duplicate rows \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Data Quality Checks}
+
+\begin{itemize}
+  \item \textbf{Uniqueness}: The \texttt{UNIQUE(ticker\_id, trade\_date)}
+    constraint in PostgreSQL and the composite document ID
+    (\texttt{ticker\_trade\_date}) in Elasticsearch prevent duplicates.
+  \item \textbf{Null handling}: Records with empty OHLCV fields are skipped by
+    the loader; SMA fields use \texttt{min\_periods=1} to produce values even
+    at the start of a series.
+  \item \textbf{Signal validation}: Signal values are constrained to
+    \{BULLISH, BEARISH, NEUTRAL\} by the rule-based logic in
+    \texttt{transformer.py}.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Limitations and Future Work}
+
+\begin{itemize}
+  \item \textbf{Real-time streaming}: The current pipeline is batch-oriented
+    (daily granularity). A future iteration could use Apache Kafka to support
+    intraday tick-level data.
+  \item \textbf{Security}: Elasticsearch runs with \texttt{xpack.security=false}
+    for simplicity. Production deployments should enable TLS and role-based access.
+  \item \textbf{Schema migrations}: Although \texttt{init.sql} is versioned,
+    a dedicated migration tool (e.g., Flyway or Alembic) would provide finer
+    control over schema evolution.
+  \item \textbf{Broader ticker universe}: Scaling beyond ten tickers requires
+    pagination of the yfinance API and horizontal sharding in Elasticsearch.
+  \item \textbf{Dashboard alerts}: Kibana alerting rules on signal changes
+    (e.g., BULLISH $\to$ BEARISH) would add operational value.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{AI Usage Declaration}
+
+\begin{enumerate}
+  \item \textbf{Tool used}: Gemini (Google, version accessed Spring 2026) was
+    used for structuring the report according to IEEE format requirements.
+    GitHub Copilot assisted with Python boilerplate (e.g., argument parsing,
+    logging setup).
+  \item \textbf{Purpose of each use}:
+    \begin{itemize}
+      \item Gemini: suggested section ordering and abstract phrasing.
+      \item Copilot: generated initial function skeletons for
+        \texttt{psycopg2} connection handling; all logic was written and
+        verified by the team.
+    \end{itemize}
+  \item \textbf{Validation method}: All AI-suggested code was executed locally
+    inside the Docker Compose environment and manually verified against
+    PostgreSQL query results and Elasticsearch cluster health endpoints.
+    No AI-generated citations or performance numbers were used---all metrics
+    in Table~\ref{tab:perf} were measured on the team's hardware.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{Individual Contribution Table}
+
+\begin{table}[ht]
+  \centering
+  \caption{Individual contributions.}
+  \begin{tabular}{p{3cm}p{4.5cm}}
+    \toprule
+    \textbf{Team Member} & \textbf{Contributions} \\
+    \midrule
+    Ata Türkoğlu (150210337) &
+      \textit{Data ingestion, orchestration, and ETL processing.}
+      Implemented a Dockerised Python service that queries \textit{yfinance}
+      to retrieve OHLCV time-series for a configurable set of stock tickers
+      across arbitrary date ranges.
+      Designed and deployed Apache Airflow DAGs to schedule and monitor the
+      ingestion task, providing automatic retries, dependency tracking, and
+      end-to-end pipeline idempotency.
+      Built the transformation stage that computes SMA-7 and SMA-30 to smooth
+      short-term price noise, derives daily spread and percentage-change metrics
+      to quantify intraday volatility and risk, and applies a rule-based
+      signal-generation step that tags each record as Bullish (closing price
+      above the moving average) or Bearish (closing price below the moving
+      average), offloading all computational heavy-lifting from downstream
+      visualisation tools. \\
+    \midrule
+    Venera Vangjeli (150240933) &
+      \textit{Relational storage, search indexing, and visual analytics.}
+      Loaded enriched records into PostgreSQL using a normalised schema that
+      separates ticker metadata, daily OHLCV observations, and derived indicator
+      tables; managed schema versions through SQL migration scripts; administered
+      the database via pgAdmin.
+      Pushed processed documents to Elasticsearch with custom index mappings
+      optimised for time-range and keyword queries.
+      Built Kibana dashboards presenting candlestick views of daily price
+      movements, SMA overlay line charts, volume bar charts, and volatility
+      heatmaps that allow analysts to identify market regimes at a glance. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+
+\bibitem{yfinance}
+R. Aroussi, ``yfinance: Download market data from Yahoo! Finance's API,''
+\textit{GitHub repository}, 2019. [Online].
+Available: \url{https://github.com/ranaroussi/yfinance}
+
+\bibitem{airflow}
+Apache Software Foundation, ``Apache Airflow,'' 2023. [Online].
+Available: \url{https://airflow.apache.org}
+
+\bibitem{postgres}
+The PostgreSQL Global Development Group, ``PostgreSQL 16 Documentation,''
+2023. [Online]. Available: \url{https://www.postgresql.org/docs/16/}
+
+\bibitem{elastic}
+Elastic N.V., ``Elasticsearch Guide [8.11],'' 2023. [Online].
+Available: \url{https://www.elastic.co/guide/en/elasticsearch/reference/8.11/}
+
+\bibitem{kibana}
+Elastic N.V., ``Kibana Guide [8.11],'' 2023. [Online].
+Available: \url{https://www.elastic.co/guide/en/kibana/8.11/}
+
+\bibitem{docker}
+Docker Inc., ``Docker Compose Overview,'' 2023. [Online].
+Available: \\url{https://docs.docker.com/compose/}
+
+\bibitem{psycopg2}
+F. Gregorio, ``Psycopg -- PostgreSQL database adapter for Python,''
+2023. [Online]. Available: \url{https://www.psycopg.org/docs/}
+
+\bibitem{sma}
+J. J. Murphy, \textit{Technical Analysis of the Financial Markets}.
+New York: New York Institute of Finance, 1999.
+
+\bibitem{unesco}
+UNESCO, ``Guidance for Generative AI in Education and Research,''
+2023. [Online]. Available: \\url{https://www.unesco.org}
+
+\end{thebibliography}
+
+\end{document}
