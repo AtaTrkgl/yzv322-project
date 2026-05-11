@@ -9,7 +9,7 @@ The processed data is persisted in a relational PostgreSQL database and simultan
 ## Team Members
 [Ata Türkoğlu](https://www.github.com/AtaTrkgl) (150210337) - Data ingestion, orchestration (Apache Airflow), and ETL processing.  
 
-Venera Vangjeli (150240933) - Relational storage (PostgreSQL/pgAdmin), search indexing (Elasticsearch), and visual analytics (Kibana).
+[Venera Vangjeli](https://github.com/itu-itis25-vangjeli25) (150240933) - Relational storage (PostgreSQL/pgAdmin), search indexing (Elasticsearch), and visual analytics (Kibana).
 
 ## Architecture
 
@@ -71,10 +71,10 @@ Once the Docker containers are up and running (`docker compose up -d`), you can 
     -   Go to the "Connection" tab and enter the following details:
         -   **Host name/address:** `postgres` (This is the service name within the Docker network)
         -   **Port:** `5432`
-        -   **Maintenance database:** `finance`
+        -   **Maintenance database:** `airflow`
         -   **Username:** `airflow`
         -   **Password:** `airflow`
     -   Click "Save".
 4.  **Explore the Database:**
-    -   Once connected, expand "Servers" -> "Financial Market DB" -> "Databases" -> "finance" -> "Schemas" -> "public" -> "Tables".
+    -   Once connected, expand "Servers" -> "Financial Market DB" -> "Databases" -> "airflow" -> "Schemas" -> "public" -> "Tables".
     -   You should see the `stock_data` table. Right-click on `stock_data` and select "View/Edit Data" -> "All Rows" to see the ingested financial data.

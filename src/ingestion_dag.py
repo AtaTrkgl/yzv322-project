@@ -32,7 +32,7 @@ with DAG(
         # No --tickers argument supplied, meaning it will fallback to the ticks list in python
         command="python yfinance_fetcher.py --start {{ ds }} --end {{ data_interval_end | ds }} --output /data",
         docker_url='unix://var/run/docker.sock',
-        network_mode='yzv322-project_default',
+        network_mode='yzv322-project_pipeline-net',
         mount_tmp_dir=False,
         mounts=[
             Mount(source='ingestion_data', target='/data', type='volume')
@@ -46,7 +46,7 @@ with DAG(
         auto_remove=True,
         command="python transformer.py --data-dir /data --date {{ ds }}",
         docker_url='unix://var/run/docker.sock',
-        network_mode='yzv322-project_default',
+        network_mode='yzv322-project_pipeline-net',
         mount_tmp_dir=False,
         mounts=[
             Mount(source='ingestion_data', target='/data', type='volume')
@@ -60,14 +60,14 @@ with DAG(
         auto_remove=True,
         command="python postgres_loader.py --data-dir /data --date {{ ds }}",
         docker_url='unix://var/run/docker.sock',
-        network_mode='yzv322-project_default',
+        network_mode='yzv322-project_pipeline-net',
         mount_tmp_dir=False,
         environment={
             'POSTGRES_HOST': 'postgres',
             'POSTGRES_PORT': '5432',
             'POSTGRES_USER': 'airflow',
             'POSTGRES_PASSWORD': 'airflow',
-            'POSTGRES_DB': 'finance'
+            'POSTGRES_DB': 'airflow'
         },
         mounts=[
             Mount(source='ingestion_data', target='/data', type='volume')

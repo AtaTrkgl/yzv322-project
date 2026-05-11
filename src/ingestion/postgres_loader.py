@@ -45,7 +45,7 @@ def load_data(data_dir, db_host, db_port, db_user, db_password, db_name, target_
         if target_date:
             parts = filename.replace(".json", "").split("_")
             if len(parts) < 3 or parts[1] != target_date:
-                logging.info(f"Skipping {filename} (not target date {target_date})")
+                logging.debug(f"Skipping {filename} (not target date {target_date})")
                 continue
 
         filepath = os.path.join(data_dir, filename)
@@ -76,6 +76,6 @@ if __name__ == "__main__":
     port = os.environ.get("POSTGRES_PORT", "5432")
     user = os.environ.get("POSTGRES_USER", "airflow")
     password = os.environ.get("POSTGRES_PASSWORD", "airflow")
-    db = os.environ.get("POSTGRES_DB", "finance")
+    db = os.environ.get("POSTGRES_DB", "airflow")
     
     load_data(args.data_dir, host, port, user, password, db, target_date=args.date)

@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_USER:     ${POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
-      POSTGRES_DB:       ${POSTGRES_DB:-finance}
+      POSTGRES_DB:       ${POSTGRES_DB:-airflow}
     ports:
       - "5432:5432"
     volumes:
@@ -83,7 +83,7 @@ services:
       - "8080:8080"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-finance}
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-airflow}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - _AIRFLOW_DB_MIGRATE=True
       - _AIRFLOW_WWW_USER_CREATE=True
@@ -120,7 +120,7 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER:-airflow}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-airflow}
-      - POSTGRES_DB=${POSTGRES_DB:-finance}
+      - POSTGRES_DB=${POSTGRES_DB:-airflow}
       - ELASTICSEARCH_HOST=http://elasticsearch:9200
       - ES_INDEX=stock_market
     depends_on:
@@ -128,7 +128,7 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-    restart: on-failure
+    restart: always
     networks:
       - pipeline-net
 
